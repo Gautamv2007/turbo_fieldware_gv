@@ -99,6 +99,8 @@ import TurboFieldfareDecodeProtocol
                     let options = try appRuntimeOptions(request.runtimeOptions)
                     let generation = AppGenerationRequest(
                         modelDirectory: modelDirectory, prompt: request.prompt,
+                        imageURL: request.imagePath.map { URL(fileURLWithPath: $0) },
+                        imageTokenBudget: request.imageTokenBudget,
                         maxNewTokens: request.maxNewTokens,
                         maxContextTokens: request.maxContextTokens,
                         temperature: request.temperature,

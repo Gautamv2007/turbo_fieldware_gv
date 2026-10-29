@@ -1,6 +1,7 @@
 import Foundation
 import TurboFieldfareRepackCore
 import Observation
+import UniformTypeIdentifiers
 
 @MainActor
 @Observable
@@ -12,12 +13,14 @@ public final class AppModel {
 
     public var modelPathText: String
     public var promptText: String = ""
+    public private(set) var attachedImageName: String?
     public private(set) var outputPromptText: String = ""
     public var outputText: String = ""
     public var runState: RunState = .idle
     public var runtimeOptions = AppRuntimeOptions()
     public var maxNewTokensOverride: Int?
     public var maxContextTokens: Int = 4096
+    public var imageTokenBudget: Int = 560
     public var temperature: Double = 0.2
     public var topKEnabled: Bool = true
     public var topK: Int = 64
@@ -61,6 +64,9 @@ public final class AppModel {
     private let installETAClock: SuspendingClock
     private let installETAOrigin: SuspendingClock.Instant
     private var installETAEstimator = DownloadETAEstimator()
+    private var attachedImageURL: URL?
+
+    public static let imageTokenBudgetOptions = [70, 140, 280, 560]
 
     public init(modelDirectory: URL? = nil,
                 client: any AppInferenceClient = RealInferenceClient(),
@@ -96,6 +102,31 @@ public final class AppModel {
     }
 
     public var isRunning: Bool { runState == .running }
+
+    public func attachImage(from sourceURL: URL) throws {
+        let ext = sourceURL.pathExtension.lowercased()
+        guard ["jpg", "jpeg", "png"].contains(ext) else {
+            throw AppInferenceError.invalidRequest("Choose a JPEG or PNG image.")
+        }
+        let hasScope = sourceURL.startAccessingSecurityScopedResource()
+        defer { if hasScope { sourceURL.stopAccessingSecurityScopedResource() } }
+        let values = try sourceURL.resourceValues(forKeys: [.fileSizeKey])
+        guard let size = values.fileSize, size > 0, size <= 32 * 1_024 * 1_024 else {
+            throw AppInferenceError.invalidRequest("Image file exceeds the 32 MiB input limit.")
+        }
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TurboFieldfare-\(UUID().uuidString).\(ext)")
+        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        if let attachedImageURL { try? FileManager.default.removeItem(at: attachedImageURL) }
+        attachedImageURL = destination
+        attachedImageName = sourceURL.lastPathComponent
+    }
+
+    public func clearAttachedImage() {
+        if let attachedImageURL { try? FileManager.default.removeItem(at: attachedImageURL) }
+        attachedImageURL = nil
+        attachedImageName = nil
+    }
 
     public var isModelAvailable: Bool { loadState.isReady }
 
@@ -780,6 +811,8 @@ public final class AppModel {
         let request = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: modelPathText),
             prompt: promptText,
+            imageURL: attachedImageURL,
+            imageTokenBudget: imageTokenBudget,
             maxNewTokens: maxNewTokensOverride ?? maxContextTokens,
             maxContextTokens: maxContextTokens,
             temperature: Float(temperature),

@@ -48,3 +48,39 @@ protocol ChunkedPrefillRunner: LogitProducer {
                         into logits: MTLBuffer,
                         onProgress: (Int) -> Void) async throws -> PrefillResult
 }
+
+/// Per-request image rows projected by the optional Gemma 4 vision tower.
+/// `tokenOffset` points at the first image soft-token row in the expanded
+/// prompt; BOI/EOI markers remain normal token embeddings around this range.
+public struct VisionPromptEmbeddings: Sendable {
+    public let tokenOffset: Int
+    public let rowCount: Int
+    public let hiddenSize: Int
+    public let values: [Float16]
+    public let checkMemory: @Sendable () throws -> Void
+
+    public init(tokenOffset: Int, rowCount: Int, hiddenSize: Int, values: [Float16],
+                checkMemory: @escaping @Sendable () throws -> Void = {}) throws {
+        guard tokenOffset >= 0, rowCount > 0,
+              rowCount <= PrefillRuntimeConfig.maxImageChunkTokens,
+              hiddenSize == 2_816,
+              values.count == rowCount * hiddenSize else {
+            throw GeneratorError.invalidVisionEmbeddings
+        }
+        self.tokenOffset = tokenOffset
+        self.rowCount = rowCount
+        self.hiddenSize = hiddenSize
+        self.values = values
+        self.checkMemory = checkMemory
+    }
+}
+
+protocol VisionChunkedPrefillRunner: ChunkedPrefillRunner {
+    func prefillChunked(tokens: ArraySlice<Int32>,
+                        startPosition: Int,
+                        outputMode: PrefillOutputMode,
+                        config: PrefillRuntimeConfig,
+                        visionEmbeddings: VisionPromptEmbeddings,
+                        into logits: MTLBuffer,
+                        onProgress: (Int) -> Void) async throws -> PrefillResult
+}

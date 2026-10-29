@@ -67,7 +67,7 @@ import TurboFieldfareValidationSupport
 
     }
 
-    final class ChunkedTestProducer: LogitProducer, ChunkedPrefillRunner, @unchecked Sendable {
+    final class ChunkedTestProducer: LogitProducer, VisionChunkedPrefillRunner, @unchecked Sendable {
         let vocabSize: Int
         private let firstToken: Int32
         private let seed: PrefillSeed
@@ -76,6 +76,7 @@ import TurboFieldfareValidationSupport
         private(set) var chunkedCalls = 0
         private(set) var lastOutputMode: PrefillOutputMode?
         private(set) var lastConfig: PrefillRuntimeConfig?
+        private(set) var lastVisionRowCount: Int?
 
         init(vocabSize: Int,
              firstToken: Int32,
@@ -91,6 +92,7 @@ import TurboFieldfareValidationSupport
             chunkedCalls = 0
             lastOutputMode = nil
             lastConfig = nil
+            lastVisionRowCount = nil
         }
 
         func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws {
@@ -112,6 +114,22 @@ import TurboFieldfareValidationSupport
             onProgress(tokens.count)
             return PrefillResult(newPosition: startPosition + tokens.count,
                                  seed: seed)
+        }
+
+        func prefillChunked(tokens: ArraySlice<Int32>,
+                            startPosition: Int,
+                            outputMode: PrefillOutputMode,
+                            config: PrefillRuntimeConfig,
+                            visionEmbeddings: VisionPromptEmbeddings,
+                            into logits: MTLBuffer,
+                            onProgress: (Int) -> Void) async throws -> PrefillResult {
+            lastVisionRowCount = visionEmbeddings.rowCount
+            return try await prefillChunked(tokens: tokens,
+                                            startPosition: startPosition,
+                                            outputMode: outputMode,
+                                            config: config,
+                                            into: logits,
+                                            onProgress: onProgress)
         }
     }
 

@@ -86,9 +86,12 @@ public func runRawCompletion(producer: any LogitProducer,
                              scratch: RawCompletionScratch,
                              prefillConfig: PrefillRuntimeConfig = .defaultChunked,
                              start: RawCompletionStart = .reset,
+                             visionEmbeddings: VisionPromptEmbeddings? = nil,
+                             resourceCheck: () throws -> Void = {},
                              shouldStop: () -> Bool = { false },
                              onProgress: (RawDecodeProgress) -> Void) async throws -> RawDecodeResult {
     try config.validate()
+    try resourceCheck()
     guard !promptIds.isEmpty else {
         throw GeneratorError.emptyPrompt
     }
@@ -121,6 +124,14 @@ public func runRawCompletion(producer: any LogitProducer,
     var history = Array(promptIds.prefix(cachedPromptTokens))
     history.reserveCapacity(promptIds.count + config.maxNewTokens)
 
+    if let visionEmbeddings {
+        guard visionEmbeddings.tokenOffset + visionEmbeddings.rowCount <= promptIds.count else {
+            throw GeneratorError.invalidVisionEmbeddings
+        }
+        guard promptIds.count <= 4_096 else {
+            throw GeneratorError.visionContextLimit(prompt: promptIds.count, limit: 4_096)
+        }
+    }
     if let context = producer as? any ContextWindowReporting,
        promptIds.count + config.maxNewTokens > context.maxContext {
         throw GeneratorError.contextOverflow(prompt: promptIds.count,
@@ -138,16 +149,39 @@ public func runRawCompletion(producer: any LogitProducer,
     var position = cachedPromptTokens
     var prefillSeed: PrefillSeed?
     let prefillTokens = promptIds[cachedPromptTokens...]
-    switch prefillConfig.mode {
+    let effectivePrefillConfig: PrefillRuntimeConfig
+    if let visionEmbeddings {
+        effectivePrefillConfig = PrefillRuntimeConfig.forImage(
+            base: prefillConfig, imageRowCount: visionEmbeddings.rowCount)
+    } else {
+        effectivePrefillConfig = prefillConfig
+    }
+    switch effectivePrefillConfig.mode {
     case .chunked where producer is any ChunkedPrefillRunner:
         let chunked = producer as! any ChunkedPrefillRunner
         let mode: PrefillOutputMode = fusedGreedy ? .greedyIfAvailable : .logits
-        let result = try await chunked.prefillChunked(tokens: prefillTokens,
+        let progress: (Int) -> Void = { done in
+            onProgress(.prefill(done: cachedPromptTokens + done, total: promptIds.count))
+        }
+        let result: PrefillResult
+        if let visionEmbeddings {
+            guard let visionRunner = producer as? any VisionChunkedPrefillRunner else {
+                throw PrefillError.chunkedUnsupported("this runtime cannot prefill image embeddings")
+            }
+            result = try await visionRunner.prefillChunked(tokens: prefillTokens,
+                                                           startPosition: position,
+                                                           outputMode: mode,
+                                                           config: effectivePrefillConfig,
+                                                           visionEmbeddings: visionEmbeddings,
+                                                           into: scratch.logits,
+                                                           onProgress: progress)
+        } else {
+            result = try await chunked.prefillChunked(tokens: prefillTokens,
                                                       startPosition: position,
                                                       outputMode: mode,
-                                                      config: prefillConfig,
-                                                      into: scratch.logits) { done in
-            onProgress(.prefill(done: cachedPromptTokens + done, total: promptIds.count))
+                                                      config: effectivePrefillConfig,
+                                                      into: scratch.logits,
+                                                      onProgress: progress)
         }
         if mode == .logits, result.seed != .logitsWritten {
             throw PrefillError.unsupportedPrefillSeed(
@@ -164,6 +198,9 @@ public func runRawCompletion(producer: any LogitProducer,
         throw PrefillError.chunkedUnsupported(
             PrefillError.chunkedRequiresChunkedRunnerReason)
     case .off:
+        guard visionEmbeddings == nil else {
+            throw PrefillError.chunkedUnsupported("image requests require chunked prefill")
+        }
         for t in prefillTokens {
             try Task.checkCancellation()
             try await producer.produce(token: t, position: position, into: scratch.logits)
@@ -182,6 +219,7 @@ public func runRawCompletion(producer: any LogitProducer,
 
     while true {
         try Task.checkCancellation()
+        try resourceCheck()
 
         let tokenID: Int32
         if generated == 0, let seed = prefillSeed {

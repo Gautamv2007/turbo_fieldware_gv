@@ -781,6 +781,8 @@ struct PrefillAttentionParams {
     uint numKVHeads;
     uint kvValidCount;
     uint slidingWindow;
+    uint visionStartPosition;
+    uint visionEndPosition;
     uint kvTokenStrideElements;
     uint qTokenStrideElements;
     uint oTokenStrideElements;
@@ -856,11 +858,16 @@ kernel void attention_prefill_causal_tiled(
     const uint q_per_kv = p.numQHeads / p.numKVHeads;
     const uint kvh = qh / q_per_kv;
     const uint abs_q = p.startPosition + t;
+    const bool is_vision_query = abs_q >= p.visionStartPosition && abs_q < p.visionEndPosition;
     uint first = 0u;
     if (p.slidingWindow != 0u && abs_q + 1u > p.slidingWindow) {
         first = abs_q + 1u - p.slidingWindow;
     }
-    const uint last_exclusive = min(p.kvValidCount, abs_q + 1u);
+    if (is_vision_query) first = min(first, p.visionStartPosition);
+    const uint causal_last_exclusive = min(p.kvValidCount, abs_q + 1u);
+    const uint last_exclusive = is_vision_query
+        ? max(causal_last_exclusive, min(p.kvValidCount, p.visionEndPosition))
+        : causal_last_exclusive;
 
     device const half* q_row = Q + t * p.qTokenStrideElements + qh * p.headDim;
     float row_max = -INFINITY;
@@ -868,6 +875,10 @@ kernel void attention_prefill_causal_tiled(
     float acc = 0.0f;
 
     for (uint key = first; key < last_exclusive; ++key) {
+        const bool in_vision_block = key >= p.visionStartPosition && key < p.visionEndPosition;
+        const bool in_causal_window = key <= abs_q &&
+            (p.slidingWindow == 0u || abs_q - key < p.slidingWindow);
+        if (!in_vision_block && !in_causal_window) continue;
         const uint phys_key = prefill_kv_slot(key);
         device const half* k_row = K + phys_key * p.kvTokenStrideElements + kvh * p.headDim;
         const float qv = owns ? float(q_row[d]) : 0.0f;

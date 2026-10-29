@@ -13,6 +13,8 @@ enum GeneratorError: Error, CustomStringConvertible, Equatable {
     case invalidGenerationConfig(String)
     case invalidContinuation(String)
     case emptyPrompt
+    case invalidVisionEmbeddings
+    case visionContextLimit(prompt: Int, limit: Int)
 
     public var description: String {
         switch self {
@@ -24,6 +26,10 @@ enum GeneratorError: Error, CustomStringConvertible, Equatable {
             return reason
         case .emptyPrompt:
             return "empty prompt"
+        case .invalidVisionEmbeddings:
+            return "invalid image embedding rows"
+        case .visionContextLimit(let prompt, let limit):
+            return "image prompt has \(prompt) tokens, exceeding the \(limit)-token image context limit"
         }
     }
 }

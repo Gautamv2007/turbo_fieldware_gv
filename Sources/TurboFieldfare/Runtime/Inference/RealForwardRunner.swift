@@ -130,7 +130,7 @@ internal enum PrefillProjectionDispatchPolicy {
     }
 }
 
-public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporting, ContinuableLogitProducer, @unchecked Sendable {
+public final class RealForwardRunner: VisionChunkedPrefillRunner, ContextWindowReporting, ContinuableLogitProducer, @unchecked Sendable {
     private struct LayerSharedExpertProjections {
         let gate: SharedExpertInt8Proj
         let up: SharedExpertInt8Proj
@@ -247,7 +247,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                      maxContext: maxContext,
                                      fp16RingEnabled: useFP16Ring,
                                      slidingWindow: cfg.slidingWindow,
-                                     maxPrefillChunkTokens: PrefillRuntimeConfig.maxChunkTokens)
+                                     maxPrefillChunkTokens: PrefillRuntimeConfig.maxImageChunkTokens)
 
         self.embedInt4 = try EmbedLookupInt4(context: context)
         self.rms       = try RMSNorm(context: context)
@@ -490,6 +490,38 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                config: PrefillRuntimeConfig,
                                into logits: MTLBuffer,
                                onProgress: (Int) -> Void) async throws -> PrefillResult {
+        try await prefillChunkedInternal(tokens: tokens,
+                                         startPosition: startPosition,
+                                         outputMode: outputMode,
+                                         config: config,
+                                         visionEmbeddings: nil,
+                                         into: logits,
+                                         onProgress: onProgress)
+    }
+
+    func prefillChunked(tokens: ArraySlice<Int32>,
+                        startPosition: Int,
+                        outputMode: PrefillOutputMode,
+                        config: PrefillRuntimeConfig,
+                        visionEmbeddings: VisionPromptEmbeddings,
+                        into logits: MTLBuffer,
+                        onProgress: (Int) -> Void) async throws -> PrefillResult {
+        try await prefillChunkedInternal(tokens: tokens,
+                                         startPosition: startPosition,
+                                         outputMode: outputMode,
+                                         config: config,
+                                         visionEmbeddings: visionEmbeddings,
+                                         into: logits,
+                                         onProgress: onProgress)
+    }
+
+    private func prefillChunkedInternal(tokens: ArraySlice<Int32>,
+                                        startPosition: Int,
+                                        outputMode: PrefillOutputMode,
+                                        config: PrefillRuntimeConfig,
+                                        visionEmbeddings: VisionPromptEmbeddings?,
+                                        into logits: MTLBuffer,
+                                        onProgress: (Int) -> Void) async throws -> PrefillResult {
         try prefillChunkState.requireClean(operation: "prefillChunked")
         guard config.mode == .chunked else {
             throw PrefillError.chunkedUnsupported(
@@ -512,10 +544,32 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             return PrefillResult(newPosition: startPosition, seed: .logitsWritten)
         }
 
+        var imageRows: (buffer: MTLBuffer, startPosition: Int, endPosition: Int,
+                        checkMemory: @Sendable () throws -> Void)?
+        var protectedRange: Range<Int>?
+        if let visionEmbeddings {
+            guard visionEmbeddings.tokenOffset + visionEmbeddings.rowCount <= tokens.count,
+                  visionEmbeddings.rowCount <= config.chunkTokens else {
+                throw PrefillError.chunkedUnsupported("image embedding block does not fit in the prefill range")
+            }
+            let byteCount = visionEmbeddings.values.count * MemoryLayout<Float16>.stride
+            guard let buffer = ctx.device.makeBuffer(bytes: visionEmbeddings.values,
+                                                      length: byteCount,
+                                                      options: .storageModeShared) else {
+                throw ModelError.residentBufferWrapFailed
+            }
+            let lower = visionEmbeddings.tokenOffset
+            let upper = lower + visionEmbeddings.rowCount
+            protectedRange = lower..<upper
+            imageRows = (buffer, startPosition + lower, startPosition + upper,
+                         visionEmbeddings.checkMemory)
+        }
+
         let scratch = try ensurePrefillScratch(config: config)
         let spans = PrefillChunkPlanner.spans(tokenCount: tokens.count,
                                               startPosition: startPosition,
-                                              config: config)
+                                              config: config,
+                                              protectedRange: protectedRange)
         for (spanIndex, span) in spans.enumerated() {
             let lower = tokens.index(tokens.startIndex, offsetBy: span.tokenOffset)
             let upper = tokens.index(lower, offsetBy: span.tokenCount)
@@ -526,6 +580,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 logits: logits,
                 scratch: scratch,
                 config: config,
+                imageRows: imageRows,
                 writeFinalHead: spanIndex == spans.count - 1)
             onProgress(span.completedCount)
         }
@@ -554,6 +609,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                      logits: MTLBuffer,
                                      scratch: PrefillChunkScratchBuffers,
                                      config: PrefillRuntimeConfig,
+                                     imageRows: (buffer: MTLBuffer, startPosition: Int, endPosition: Int,
+                                                 checkMemory: @Sendable () throws -> Void)?,
                                      writeFinalHead: Bool) async throws {
         guard !tokens.isEmpty else { return }
         guard kv != nil else {
@@ -777,7 +834,27 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                             d: UInt32(D),
                             outScale: sqrtHidden)
 
+        if let imageRows {
+            let chunkEnd = startPosition + t
+            let lower = max(startPosition, imageRows.startPosition)
+            let upper = min(chunkEnd, imageRows.endPosition)
+            if lower < upper {
+                guard lower == imageRows.startPosition && upper == imageRows.endPosition,
+                      let blit = cb.makeBlitCommandEncoder() else {
+                    throw PrefillError.chunkedUnsupported("image embedding block was split across chunks")
+                }
+                let sourceOffset = (lower - imageRows.startPosition) * D * MemoryLayout<Float16>.stride
+                let destinationOffset = (lower - startPosition) * D * MemoryLayout<Float16>.stride
+                let byteCount = (upper - lower) * D * MemoryLayout<Float16>.stride
+                blit.copy(from: imageRows.buffer, sourceOffset: sourceOffset,
+                          to: scratch.hidden, destinationOffset: destinationOffset,
+                          size: byteCount)
+                blit.endEncoding()
+            }
+        }
+
         for L in 0..<cfg.numLayers {
+            try imageRows?.checkMemory()
             model.beginOpeningRoutedExpertStreamer(layer: L)
             let views = layerViews[L]
             let isFull = cfg.fullAttentionLayerMask[L] != 0
@@ -866,6 +943,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     numKVHeads: UInt32(numKVHeads),
                     kvValidCount: UInt32(startPosition + t),
                     slidingWindow: isFull ? UInt32(startPosition + t) : UInt32(cfg.slidingWindow),
+                    visionStartPosition: imageRows.map { UInt32($0.startPosition) } ?? 0,
+                    visionEndPosition: imageRows.map { UInt32($0.endPosition) } ?? 0,
                     kvTokenStrideElements: UInt32(kvDim),
                     qTokenStrideElements: UInt32(qDim),
                     oTokenStrideElements: UInt32(qDim),
@@ -884,7 +963,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                                   out: scratch.attentionOutput,
                                                   params: params,
                                                   kvRingCapacity: activeRingCapacity,
-                                                  path: prefillAttentionPath)
+                                                  path: imageRows == nil ? prefillAttentionPath : .causalTiled)
             } else {
                 throw PrefillError.chunkedUnsupported(
                     "chunked prefill attention requires FP16 KV")

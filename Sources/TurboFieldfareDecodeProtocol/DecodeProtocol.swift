@@ -44,6 +44,8 @@ public struct DecodeLoadRequest: Codable, Sendable {
 
 public struct DecodeGenerationRequest: Codable, Sendable {
     public var prompt: String
+    public var imagePath: String?
+    public var imageTokenBudget: Int
     public var maxNewTokens: Int
     public var maxContextTokens: Int
     public var temperature: Float
@@ -54,8 +56,12 @@ public struct DecodeGenerationRequest: Codable, Sendable {
     public init(prompt: String, maxNewTokens: Int, maxContextTokens: Int,
                 temperature: Float, repetitionPenalty: Float = 1,
                 runtimeOptions: DecodeRuntimeOptions = DecodeRuntimeOptions(),
+                imagePath: String? = nil,
+                imageTokenBudget: Int = 560,
                 generationID: UUID = UUID()) {
         self.prompt = prompt
+        self.imagePath = imagePath
+        self.imageTokenBudget = imageTokenBudget
         self.maxNewTokens = maxNewTokens
         self.maxContextTokens = maxContextTokens
         self.temperature = temperature

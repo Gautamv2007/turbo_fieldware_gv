@@ -2,11 +2,13 @@ import AppKit
 import TurboFieldfareAppCore
 import TurboFieldfareMacPresentation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct PromptComposerView: View {
     @Bindable var model: AppModel
     @FocusState private var promptFocused: Bool
     @State private var showingPromptTips = false
+    @State private var showingImagePicker = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -14,6 +16,18 @@ struct PromptComposerView: View {
             footer
         }
         .padding(14)
+        .fileImporter(isPresented: $showingImagePicker,
+                      allowedContentTypes: [.jpeg, .png],
+                      allowsMultipleSelection: false) { result in
+            do {
+                guard let url = try result.get().first else { return }
+                try model.attachImage(from: url)
+            } catch let error as AppInferenceError {
+                model.error = error
+            } catch {
+                model.error = .invalidRequest("Could not attach image: \(error.localizedDescription)")
+            }
+        }
         .background {
             RoundedRectangle(cornerRadius: 22)
                 .fill(Color(nsColor: .controlBackgroundColor))
@@ -71,10 +85,47 @@ struct PromptComposerView: View {
     private var footer: some View {
         HStack(spacing: 10) {
             promptTips
+            imageAction
             Spacer()
             clearAction
             GenerateControl(model: model)
         }
+    }
+
+    private var imageAction: some View {
+        HStack(spacing: 6) {
+            Button {
+                showingImagePicker = true
+            } label: {
+                Label(model.attachedImageName ?? "Add image",
+                      systemImage: model.attachedImageName == nil ? "photo" : "photo.fill")
+                    .lineLimit(1)
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.isRunning)
+            if model.attachedImageName != nil {
+                Picker("Image detail", selection: $model.imageTokenBudget) {
+                    ForEach(AppModel.imageTokenBudgetOptions, id: \.self) { budget in
+                        Text("\(budget) tokens").tag(budget)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .help("Higher image token budgets preserve more visual detail and use more memory and prefill time.")
+                .disabled(model.isRunning)
+            }
+            if model.attachedImageName != nil {
+                Button {
+                    model.clearAttachedImage()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove image")
+                .disabled(model.isRunning)
+            }
+        }
+        .help("Attach one JPEG or PNG image (up to 560 image tokens, 4K context maximum)")
     }
 
     private var promptTips: some View {

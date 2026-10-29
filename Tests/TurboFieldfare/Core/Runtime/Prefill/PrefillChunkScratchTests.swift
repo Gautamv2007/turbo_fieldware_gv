@@ -30,9 +30,10 @@ import Metal
         #expect(layout.totalPersistentBytes <= worksheetT32UpperBound)
     }
 
-    @Test func layoutClampsChunkSizeToRuntimeBounds() {
+    @Test func layoutClampsChunkSizeToImageRuntimeBounds() {
         #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 0).chunkTokens == 1)
-        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 512).chunkTokens == 128)
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 512).chunkTokens == 512)
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 1_120).chunkTokens == 560)
     }
 
     @Test func allocationUsesPrivateScratchAndSharedRouteMetadata() throws {

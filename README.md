@@ -66,7 +66,7 @@ your prompt, and press **Generate**.
 | --------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | Model           | Gemma 4 26B-A4B IT, 26B total parameters, about 3.88B active per token                                                   |
 | Weights         | MLX affine 4-bit, group 64; 8-bit router; 4-bit shared and routed experts                                                |
-| Memory          | ~2 GB of weights and 4K KV cache                                                                                         |
+| Memory          | ~2 GB text inference; optional image requests use an adaptive budget capped at 6 GiB |
 | Storage         | About 14.3 GB for the installed text-only model                                                                          |
 | Hardware        | Apple Silicon Mac; 8 GB of RAM                                                                                            |
 | Platform        | macOS 26, Metal 4, Swift 6.2                                                                                             |
@@ -117,11 +117,13 @@ Generation defaults to temperature `0.2`, Top-K `64`, and Top-P `0.95`. Set
 temperature to `0` for deterministic greedy output. The model can still repeat
 itself or give incorrect answers, so check important results.
 
-TurboFieldfare is text-only. The app and CLI support user and model messages
-plus optional system guidance; they do not expose or execute tools. The
-loopback server accepts function-tool declarations and returns
-model-produced tool calls for the client to authorize and execute. Images,
-audio, and video are not supported.
+The Mac app supports one optional JPEG or PNG image per request when separate
+vision weights are provided. See [Single-image input](docs/IMAGE_INPUT.md) for
+the variable image detail, 4K-context, and memory limits. The app and CLI support user and
+model messages plus optional system guidance; they do not expose or execute
+tools. The loopback server accepts function-tool declarations and returns
+model-produced tool calls for the client to authorize and execute. Audio and
+video are not supported.
 
 ### Mac app
 
@@ -302,7 +304,8 @@ correctness invariants.
 TurboFieldfare currently includes:
 
 - Remote streaming repack into the `.gturbo` model format
-- Instruction-tuned Gemma 4 26B-A4B with verified text-only chat formatting
+- Instruction-tuned Gemma 4 26B-A4B with verified text chat formatting and
+  optional, separately provisioned single-image input in the Mac app
 - 4-bit MLX affine embedding, attention, shared-expert, and routed-expert
   weights, with an 8-bit router
 - Custom Metal kernels for quantized GEMV, attention, MoE, normalization,
@@ -316,8 +319,11 @@ TurboFieldfare currently includes:
   OpenAI-compatible server, and native SwiftUI/AppKit Mac app with a one-shot
   local decode service
 
-Current scope is text-only inference from the pinned Gemma 4 26B-A4B
-instruction checkpoint on Apple Silicon Macs with at least 8 GB of RAM.
+The standard install remains text-only. Optional image input uses only Gemma's
+vision tower through MLX Swift while the custom Metal runtime performs text
+prefill and generation. Image operation uses an adaptive process guard capped
+at 6 GiB and still requires representative Apple Silicon measurements before
+claiming a peak.
 
 ### Future work
 

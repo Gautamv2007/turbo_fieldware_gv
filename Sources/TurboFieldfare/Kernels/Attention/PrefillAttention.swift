@@ -9,6 +9,8 @@ struct PrefillAttentionParams: Sendable, Equatable {
     var numKVHeads: UInt32
     var kvValidCount: UInt32
     var slidingWindow: UInt32
+    var visionStartPosition: UInt32
+    var visionEndPosition: UInt32
     var kvTokenStrideElements: UInt32
     var qTokenStrideElements: UInt32
     var oTokenStrideElements: UInt32
@@ -21,6 +23,8 @@ struct PrefillAttentionParams: Sendable, Equatable {
                 numKVHeads: UInt32,
                 kvValidCount: UInt32,
                 slidingWindow: UInt32,
+                visionStartPosition: UInt32 = 0,
+                visionEndPosition: UInt32 = 0,
                 kvTokenStrideElements: UInt32,
                 qTokenStrideElements: UInt32,
                 oTokenStrideElements: UInt32,
@@ -32,6 +36,8 @@ struct PrefillAttentionParams: Sendable, Equatable {
         self.numKVHeads = numKVHeads
         self.kvValidCount = kvValidCount
         self.slidingWindow = slidingWindow
+        self.visionStartPosition = visionStartPosition
+        self.visionEndPosition = visionEndPosition
         self.kvTokenStrideElements = kvTokenStrideElements
         self.qTokenStrideElements = qTokenStrideElements
         self.oTokenStrideElements = oTokenStrideElements

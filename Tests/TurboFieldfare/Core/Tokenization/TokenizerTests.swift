@@ -25,6 +25,11 @@ struct TokenizerTests {
         }
     }
 
+    @Test("Gemma image placeholder maps to the pinned ID")
+    func imagePlaceholderToken() {
+        #expect(tok.encode("<|image|>", addBOS: false) == [258_880])
+    }
+
     @Test("Stop-token set covers EOS, end-of-turn, and tool response")
     func stopTokens() {
         #expect(tok.stopTokenIDs.contains(tok.eosID))

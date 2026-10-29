@@ -3,6 +3,35 @@ import Testing
 @testable import TurboFieldfare
 
 extension RawCompletionLoopTests {
+    @Test func imagePrefillChunkCoversTheFull560RowBudget() async throws {
+        let context = try MetalContext()
+        let tokenizer = try await GFTokenizer.load()
+        let tokenA = tokenizer.encode("a", addBOS: false).first!
+        let rowCount = PrefillRuntimeConfig.maxImageChunkTokens
+        let embeddings = try VisionPromptEmbeddings(
+            tokenOffset: 1,
+            rowCount: rowCount,
+            hiddenSize: 2_816,
+            values: [Float16](repeating: 0, count: rowCount * 2_816))
+        let producer = ChunkedTestProducer(vocabSize: tokenizer.vocabSize,
+                                           firstToken: tokenA)
+        let scratch = try RawCompletionScratch(context: context, vocab: tokenizer.vocabSize)
+        let promptIDs = [Int32](repeating: tokenA, count: rowCount + 1)
+
+        _ = try await runRawCompletion(
+            producer: producer,
+            tokenizer: tokenizer,
+            promptIds: promptIDs,
+            config: GenerationConfig(maxNewTokens: 1, temperature: 0),
+            context: context,
+            scratch: scratch,
+            prefillConfig: .production(chunkTokens: 128),
+            visionEmbeddings: embeddings) { _ in }
+
+        #expect(producer.lastVisionRowCount == rowCount)
+        #expect(producer.lastConfig?.chunkTokens == rowCount)
+    }
+
     @Test func chunkedModeRequiresChunkedProducer() async throws {
         let context = try MetalContext()
         let tokenizer = try await GFTokenizer.load()

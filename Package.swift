@@ -18,6 +18,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-nio.git", exact: "2.101.3"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.33.0"),
     ],
     targets: [
         .target(
@@ -35,6 +36,14 @@ let package = Package(
             resources: [
                 .copy("Metal"),
             ]
+        ),
+        .target(
+            name: "TurboFieldfareVision",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+            ],
+            path: "Sources/TurboFieldfareVision"
         ),
         .target(
             name: "TurboFieldfareRepackCore",
@@ -59,7 +68,7 @@ let package = Package(
         ),
         .target(
             name: "TurboFieldfareAppCore",
-            dependencies: ["TurboFieldfare", "TurboFieldfareRepackCore", "TurboFieldfareDecodeProtocol"],
+            dependencies: ["TurboFieldfare", "TurboFieldfareRepackCore", "TurboFieldfareDecodeProtocol", "TurboFieldfareVision"],
             path: "Sources/TurboFieldfareApp/Core",
             resources: [
                 .copy("Resources/app-prompts.json"),
@@ -138,6 +147,11 @@ let package = Package(
             name: "TurboFieldfareAppCoreTests",
             dependencies: ["TurboFieldfareAppCore", "TurboFieldfare", "TurboFieldfareRepackCore", "TurboFieldfareDecodeProtocol"],
             path: "Tests/TurboFieldfareApp/Core"
+        ),
+        .testTarget(
+            name: "TurboFieldfareVisionTests",
+            dependencies: ["TurboFieldfareVision", "TurboFieldfare"],
+            path: "Tests/TurboFieldfareVision"
         ),
         .testTarget(
             name: "TurboFieldfareDecodeServiceTests",

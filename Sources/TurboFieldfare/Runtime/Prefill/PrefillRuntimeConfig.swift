@@ -86,25 +86,40 @@ struct PrefillChunkSpan: Sendable, Equatable {
 enum PrefillChunkPlanner {
     static func spans(tokenCount: Int,
                              startPosition: Int,
-                             config: PrefillRuntimeConfig) -> [PrefillChunkSpan] {
+                             config: PrefillRuntimeConfig,
+                             protectedRange: Range<Int>? = nil) -> [PrefillChunkSpan] {
         spans(tokenCount: tokenCount,
               startPosition: startPosition,
-              chunkTokens: config.chunkTokens)
+              chunkTokens: config.chunkTokens,
+              protectedRange: protectedRange)
     }
 
     static func spans(tokenCount: Int,
                              startPosition: Int,
-                             chunkTokens: Int) -> [PrefillChunkSpan] {
+                             chunkTokens: Int,
+                             protectedRange: Range<Int>? = nil) -> [PrefillChunkSpan] {
         precondition(tokenCount >= 0, "prefill tokenCount must be non-negative")
         precondition(startPosition >= 0, "prefill startPosition must be non-negative")
-        let chunk = max(1, min(chunkTokens, PrefillRuntimeConfig.maxChunkTokens))
+        let chunk = max(1, min(chunkTokens, PrefillRuntimeConfig.maxImageChunkTokens))
         guard tokenCount > 0 else { return [] }
 
         var spans: [PrefillChunkSpan] = []
         spans.reserveCapacity((tokenCount + chunk - 1) / chunk)
         var offset = 0
         while offset < tokenCount {
-            let count = min(chunk, tokenCount - offset)
+            var count = min(chunk, tokenCount - offset)
+            let boundary = offset + count
+            if let protectedRange,
+               protectedRange.lowerBound < boundary,
+               boundary < protectedRange.upperBound {
+                if protectedRange.lowerBound > offset {
+                    count = protectedRange.lowerBound - offset
+                } else {
+                    count = protectedRange.upperBound - offset
+                }
+            }
+            precondition(count > 0 && count <= chunk,
+                         "protected prefill range must fit inside one chunk")
             let completed = offset + count
             spans.append(PrefillChunkSpan(tokenOffset: offset,
                                           tokenCount: count,
@@ -169,6 +184,7 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
     }
 
     public static let maxChunkTokens = 128
+    public static let maxImageChunkTokens = 560
 
     public let mode: Mode
     public let chunkTokens: Int
@@ -192,5 +208,14 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
         precondition(RuntimeConfiguration.allowedPrefillChunkTokens.contains(chunkTokens),
                      "unsupported prefill chunk size")
         return PrefillRuntimeConfig(mode: .chunked, chunkTokens: chunkTokens)
+    }
+
+    public static func forImage(base: PrefillRuntimeConfig,
+                                imageRowCount: Int) -> PrefillRuntimeConfig {
+        precondition((1...maxImageChunkTokens).contains(imageRowCount),
+                     "unsupported image row count")
+        return PrefillRuntimeConfig(
+            mode: .chunked,
+            chunkTokens: min(max(base.chunkTokens, imageRowCount), maxImageChunkTokens))
     }
 }

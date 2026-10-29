@@ -1,6 +1,7 @@
 import Foundation
 import Metal
 import TurboFieldfare
+import TurboFieldfareVision
 import Synchronization
 
 final class GenerationTaskRegistry: Sendable {
@@ -263,15 +264,10 @@ actor RealInferenceSession {
     func run(request: AppGenerationRequest,
              memorySampler: AppMemorySampler,
              continuation: AsyncThrowingStream<AppInferenceEvent, Error>.Continuation) async {
-        let prefillConfig = request.runtimeOptions.prefillConfig
+        var prefillConfig = request.runtimeOptions.prefillConfig
         let progress = ProgressState()
         do {
             try request.validate()
-            let executedPrefillMode: PrefillExecutedMode =
-                prefillConfig.mode == .chunked ? .chunked : .off
-            let prefillDiagnostics = PrefillExecutionDiagnostics(config: prefillConfig,
-                                                                 executedMode: executedPrefillMode,
-                                                                 kvStorageMode: .fp16)
             let requestKey = SessionLoadKey(
                 directory: request.modelDirectory.standardizedFileURL,
                 maxContext: request.maxContextTokens,
@@ -283,18 +279,69 @@ actor RealInferenceSession {
                 throw AppInferenceError.modelLoadFailed("session lost its loaded state")
             }
 
-            let renderedPrompt = try tokenizer.applyChatTemplate([
-                GFTokenizer.Message(role: .user, content: request.prompt)
-            ])
-            let promptIds = tokenizer.encode(renderedPrompt, addBOS: false)
+            let encodedPrompt = try Self.encodePrompt(request: request, tokenizer: tokenizer)
+            var promptIds = encodedPrompt.promptIDs
+            memorySampler.resetPeak()
+            _ = memorySampler.sample()
+            var imageEmbeddings: VisionPromptEmbeddings?
+            if let imageURL = request.imageURL {
+                try Gemma4ImageMemoryPolicy.admit(currentFootprint: memorySampler.sample())
+                let weightsURL = request.modelDirectory.appendingPathComponent("vision_weights.safetensors")
+                let expectedHash = try Self.visionWeightsChecksum(in: request.modelDirectory)
+                do {
+                    try Sha256Verifier.verifyFile(at: weightsURL,
+                                                  named: "vision_weights.safetensors",
+                                                  expectedHex: expectedHash)
+                } catch {
+                    throw Gemma4ImageError.unavailable("vision weight integrity check failed")
+                }
+                let projected: Gemma4ProjectedImage
+                do {
+                    projected = try Gemma4VisionEncoder.project(
+                        imageURL: imageURL,
+                        weightsURL: weightsURL,
+                        imageTokenBudget: request.imageTokenBudget,
+                        maximumProcessFootprint: Gemma4ImageMemoryPolicy.stopLimitBytes,
+                        processFootprint: { memorySampler.sample() })
+                } catch let imageError as Gemma4ImageError {
+                    throw imageError
+                } catch {
+                    throw Gemma4ImageError.unavailable(
+                        "vision model could not be loaded or evaluated (\(error.localizedDescription))")
+                }
+                let expanded = try Gemma4ImagePromptExpander.expand(promptIds,
+                                                                     rowCount: projected.rowCount)
+                guard encodedPrompt.imageMarkerOffset >= 0,
+                      expanded.imageRowsOffset == encodedPrompt.imageMarkerOffset + 1 else {
+                    throw Gemma4ImageError.incompatibleWeights("image marker placement is invalid")
+                }
+                promptIds = expanded.tokenIDs
+                let memoryCheck: @Sendable () throws -> Void = {
+                    try Gemma4ImageMemoryPolicy.checkDuringImageRequest(
+                        currentFootprint: memorySampler.sample())
+                }
+                imageEmbeddings = try VisionPromptEmbeddings(
+                    tokenOffset: expanded.imageRowsOffset,
+                    rowCount: projected.rowCount,
+                    hiddenSize: projected.hiddenSize,
+                    values: projected.values,
+                    checkMemory: memoryCheck)
+            }
+            if let imageEmbeddings {
+                prefillConfig = PrefillRuntimeConfig.forImage(
+                    base: prefillConfig, imageRowCount: imageEmbeddings.rowCount)
+            }
+            let executedPrefillMode: PrefillExecutedMode =
+                request.imageURL != nil || prefillConfig.mode == .chunked ? .chunked : .off
+            let prefillDiagnostics = PrefillExecutionDiagnostics(config: prefillConfig,
+                                                                 executedMode: executedPrefillMode,
+                                                                 kvStorageMode: .fp16)
             progress.promptTokenCount = promptIds.count
             guard promptIds.count < runner.maxContext else {
                 throw AppInferenceError.contextOverflow(prompt: promptIds.count,
                                                         maxNew: request.maxNewTokens,
                                                         maxContext: runner.maxContext)
             }
-            memorySampler.resetPeak()
-            _ = memorySampler.sample()
             let config = Self.generationConfig(
                 for: request,
                 maxNewTokens: Self.effectiveMaxNewTokens(
@@ -303,11 +350,19 @@ actor RealInferenceSession {
                     maxContext: runner.maxContext))
             runner.reset()
             progress.prefillStart = Date()
+            let resourceCheck: () throws -> Void
+            if let imageEmbeddings {
+                resourceCheck = imageEmbeddings.checkMemory
+            } else {
+                resourceCheck = {}
+            }
 
             let result = try await runRawCompletion(
                 producer: runner, tokenizer: tokenizer, promptIds: promptIds,
                 config: config, context: ctx, scratch: scratch,
-                prefillConfig: prefillConfig) { event in
+                prefillConfig: prefillConfig,
+                visionEmbeddings: imageEmbeddings,
+                resourceCheck: resourceCheck) { event in
                 switch event {
                 case .prefill(let done, let total):
                     if done == total {
@@ -366,6 +421,10 @@ actor RealInferenceSession {
                            continuation: continuation,
                            prefill: diagnostics,
                            forcePartialDiagnostics: true)
+        } catch let imageError as Gemma4ImageError {
+            failGeneration(.invalidRequest(imageError.localizedDescription),
+                           request: request, memorySampler: memorySampler,
+                           progress: progress, continuation: continuation)
         } catch let appError as AppInferenceError {
             failGeneration(appError, request: request, memorySampler: memorySampler,
                            progress: progress, continuation: continuation)
@@ -373,6 +432,48 @@ actor RealInferenceSession {
             failGeneration(.unknown("\(error)"), request: request, memorySampler: memorySampler,
                            progress: progress, continuation: continuation)
         }
+    }
+
+    private static func encodePrompt(request: AppGenerationRequest,
+                                     tokenizer: GFTokenizer) throws -> (promptIDs: [Int32], imageMarkerOffset: Int) {
+        guard request.imageURL != nil else {
+            let rendered = try tokenizer.applyChatTemplate([
+                GFTokenizer.Message(role: .user, content: request.prompt)
+            ])
+            return (tokenizer.encode(rendered, addBOS: false), -1)
+        }
+        let imageMarker = Gemma4ImagePromptExpander.imageMarker
+        guard !request.prompt.contains(imageMarker) else {
+            throw AppInferenceError.invalidRequest(
+                "Image requests cannot include the reserved <|image|> marker in prompt text.")
+        }
+        let rendered = try tokenizer.applyChatTemplate([
+            GFTokenizer.Message(role: .user, content: request.prompt + "\n" + imageMarker)
+        ])
+        let ids = tokenizer.encode(rendered, addBOS: false)
+        let imageID = Gemma4ImagePromptExpander.imageTokenID
+        let offsets = ids.indices.filter { ids[$0] == imageID }
+        guard offsets.count == 1,
+              tokenizer.encode(imageMarker, addBOS: false) == [imageID] else {
+            throw Gemma4ImageError.unavailable(
+                "the installed tokenizer does not expose the pinned Gemma 4 image token")
+        }
+        return (ids, offsets[0])
+    }
+
+    private static func visionWeightsChecksum(in directory: URL) throws -> String {
+        let weights = directory.appendingPathComponent("vision_weights.safetensors")
+        let checksum = directory.appendingPathComponent("vision_weights.sha256")
+        guard FileManager.default.fileExists(atPath: weights.path),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: checksum.path),
+              ((attrs[.size] as? NSNumber)?.intValue ?? 0) <= 256,
+              let digest = try? String(contentsOf: checksum, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              digest.count == 64, digest.allSatisfy({ $0.isHexDigit }) else {
+            throw Gemma4ImageError.unavailable(
+                "vision_weights.safetensors and a 64-digit vision_weights.sha256 checksum are required in the model directory")
+        }
+        return digest
     }
 
     private func failGeneration(_ error: AppInferenceError,

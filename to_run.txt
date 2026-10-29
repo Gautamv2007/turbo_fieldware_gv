@@ -1,0 +1,4 @@
+.build/release/TurboFieldfareServer \
+  --model /Users/gautam/projects/gemma26B/turbo-fieldfare/scratch/gemma4.gturbo \
+  --port 8080 \
+  --max-context 16384

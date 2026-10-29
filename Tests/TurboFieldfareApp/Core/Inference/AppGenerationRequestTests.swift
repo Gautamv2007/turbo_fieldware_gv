@@ -7,12 +7,34 @@ import Testing
 
     @Test func defaultRequestUsesDocumentedSamplingPolicy() {
         let request = AppGenerationRequest(modelDirectory: existingDirectory, prompt: "hello")
+        #expect(request.imageURL == nil)
         #expect(request.maxNewTokens == 4_096)
         #expect(request.temperature == 0.2)
         #expect(request.topK == 64)
         #expect(request.topP == 0.95)
         #expect(request.repetitionPenalty == 1)
         #expect(!request.isPureGreedy)
+    }
+
+    @Test func imageRequestIsLimitedToFourThousandNinetySixContextTokens() throws {
+        let image = FileManager.default.temporaryDirectory
+            .appendingPathComponent("image-\(UUID().uuidString).png")
+        try Data([0]).write(to: image)
+        defer { try? FileManager.default.removeItem(at: image) }
+
+        let allowed = AppGenerationRequest(modelDirectory: existingDirectory,
+                                           prompt: "describe this",
+                                           imageURL: image,
+                                           maxContextTokens: 4_096)
+        try allowed.validate(requireModelDirectory: false)
+
+        let rejected = AppGenerationRequest(modelDirectory: existingDirectory,
+                                            prompt: "describe this",
+                                            imageURL: image,
+                                            maxContextTokens: 4_097)
+        #expect(throws: AppInferenceError.self) {
+            try rejected.validate(requireModelDirectory: false)
+        }
     }
 
     @Test func temperatureZeroRemainsPureGreedyWithTruncationDefaults() {
