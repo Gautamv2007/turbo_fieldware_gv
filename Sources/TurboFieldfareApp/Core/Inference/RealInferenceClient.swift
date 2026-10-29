@@ -264,6 +264,7 @@ actor RealInferenceSession {
     func run(request: AppGenerationRequest,
              memorySampler: AppMemorySampler,
              continuation: AsyncThrowingStream<AppInferenceEvent, Error>.Continuation) async {
+        let clock = ContinuousClock()
         var prefillConfig = request.runtimeOptions.prefillConfig
         let progress = ProgressState()
         do {
@@ -285,8 +286,10 @@ actor RealInferenceSession {
             _ = memorySampler.sample()
             var imageEmbeddings: VisionPromptEmbeddings?
             if let imageURL = request.imageURL {
+                let imageProcessingStart = clock.now
                 try Gemma4ImageMemoryPolicy.admit(currentFootprint: memorySampler.sample())
                 let weightsURL = request.modelDirectory.appendingPathComponent("vision_weights.safetensors")
+                let checksumStart = clock.now
                 let expectedHash = try Self.visionWeightsChecksum(in: request.modelDirectory)
                 do {
                     try Sha256Verifier.verifyFile(at: weightsURL,
@@ -295,6 +298,7 @@ actor RealInferenceSession {
                 } catch {
                     throw Gemma4ImageError.unavailable("vision weight integrity check failed")
                 }
+                let checksumSeconds = elapsedSeconds(checksumStart.duration(to: clock.now))
                 let projected: Gemma4ProjectedImage
                 do {
                     projected = try Gemma4VisionEncoder.project(
@@ -309,6 +313,16 @@ actor RealInferenceSession {
                     throw Gemma4ImageError.unavailable(
                         "vision model could not be loaded or evaluated (\(error.localizedDescription))")
                 }
+                progress.imageProcessing = AppImageProcessingDiagnostics(
+                    imageTokenBudget: request.imageTokenBudget,
+                    projectedTokenCount: projected.rowCount,
+                    checksumSeconds: checksumSeconds,
+                    preprocessingSeconds: projected.timings.preprocessingSeconds,
+                    weightsLoadSeconds: projected.timings.weightsLoadSeconds,
+                    visionTowerSeconds: projected.timings.visionTowerSeconds,
+                    projectorSeconds: projected.timings.projectorSeconds,
+                    outputCopySeconds: projected.timings.outputCopySeconds,
+                    totalSeconds: elapsedSeconds(imageProcessingStart.duration(to: clock.now)))
                 let expanded = try Gemma4ImagePromptExpander.expand(promptIds,
                                                                      rowCount: projected.rowCount)
                 guard encodedPrompt.imageMarkerOffset >= 0,
@@ -521,7 +535,8 @@ actor RealInferenceSession {
             peakMemoryBytes: memorySampler.peakBytes,
             runtimeOptions: request.runtimeOptions,
             prefill: prefill,
-            runner: runnerDiagnostics(progress: progress, generated: generated))
+            runner: runnerDiagnostics(progress: progress, generated: generated),
+            imageProcessing: progress.imageProcessing)
     }
 
     /// Per-token buckets as diffs of the runner's cumulative counters from the
@@ -572,6 +587,7 @@ actor RealInferenceSession {
 private final class ProgressState: @unchecked Sendable {
     var generated = 0
     var promptTokenCount: Int?
+    var imageProcessing: AppImageProcessingDiagnostics?
     var prefillStart: Date?
     var decodeStart: Date?
     var firstTokenDate: Date?
@@ -587,6 +603,12 @@ private final class ProgressState: @unchecked Sendable {
         let end = decodeStart ?? Date()
         return max(end.timeIntervalSince(prefillStart), 0)
     }
+}
+
+private func elapsedSeconds(_ duration: Duration) -> Double {
+    let components = duration.components
+    return Double(components.seconds)
+        + Double(components.attoseconds) / 1_000_000_000_000_000_000
 }
 
 private struct RunnerCounterSnapshot {

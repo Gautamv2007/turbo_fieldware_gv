@@ -316,7 +316,19 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
             peakMemoryBytes: event.peakMemoryBytes,
             runtimeOptions: options,
             prefill: prefillDiagnostics(event.prefill, options: options),
-            runner: event.runner.map(runnerDiagnostics))
+            runner: event.runner.map(runnerDiagnostics),
+            imageProcessing: event.imageProcessing.map { value in
+                AppImageProcessingDiagnostics(
+                    imageTokenBudget: value.imageTokenBudget,
+                    projectedTokenCount: value.projectedTokenCount,
+                    checksumSeconds: value.checksumSeconds,
+                    preprocessingSeconds: value.preprocessingSeconds,
+                    weightsLoadSeconds: value.weightsLoadSeconds,
+                    visionTowerSeconds: value.visionTowerSeconds,
+                    projectorSeconds: value.projectorSeconds,
+                    outputCopySeconds: value.outputCopySeconds,
+                    totalSeconds: value.totalSeconds)
+            })
     }
 
     private static func prefillDiagnostics(

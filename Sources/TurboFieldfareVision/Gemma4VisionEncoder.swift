@@ -11,6 +11,30 @@ public struct Gemma4ProjectedImage: Sendable {
     public let rowCount: Int
     public let hiddenSize: Int
     public let geometry: Gemma4ImageGeometry
+    public let timings: Gemma4VisionTimings
+}
+
+public struct Gemma4VisionTimings: Sendable, Equatable {
+    public let preprocessingSeconds: Double
+    public let weightsLoadSeconds: Double
+    public let visionTowerSeconds: Double
+    public let projectorSeconds: Double
+    public let outputCopySeconds: Double
+    public let totalSeconds: Double
+
+    public init(preprocessingSeconds: Double,
+                weightsLoadSeconds: Double,
+                visionTowerSeconds: Double,
+                projectorSeconds: Double,
+                outputCopySeconds: Double,
+                totalSeconds: Double) {
+        self.preprocessingSeconds = preprocessingSeconds
+        self.weightsLoadSeconds = weightsLoadSeconds
+        self.visionTowerSeconds = visionTowerSeconds
+        self.projectorSeconds = projectorSeconds
+        self.outputCopySeconds = outputCopySeconds
+        self.totalSeconds = totalSeconds
+    }
 }
 
 public enum Gemma4ImagePreprocessor {
@@ -164,6 +188,12 @@ private func checkProcessFootprint(_ processFootprint: @Sendable () -> UInt64?,
             current: processFootprint() ?? UInt64.max,
             limit: maximum)
     }
+}
+
+private func seconds(_ duration: Duration) -> Double {
+    let components = duration.components
+    return Double(components.seconds)
+        + Double(components.attoseconds) / 1_000_000_000_000_000_000
 }
 
 private final class VisionRMSNorm: Module, UnaryLayer {
@@ -384,11 +414,15 @@ public enum Gemma4VisionEncoder {
                                imageTokenBudget: Int = Gemma4ImageGeometry.defaultSoftTokenBudget,
                                maximumProcessFootprint: UInt64,
                                processFootprint: @Sendable () -> UInt64?) throws -> Gemma4ProjectedImage {
+        let clock = ContinuousClock()
+        let totalStart = clock.now
         guard maximumProcessFootprint > 0 else {
             throw Gemma4ImageError.memoryBudgetExceeded(current: 0, limit: 0)
         }
+        let preprocessingStart = clock.now
         let image = try Gemma4ImagePreprocessor.pixels(from: imageURL,
                                                        imageTokenBudget: imageTokenBudget)
+        let preprocessingSeconds = seconds(preprocessingStart.duration(to: clock.now))
         try checkProcessFootprint(processFootprint, maximum: maximumProcessFootprint)
         let weightFile = try weightsURL.resourceValues(forKeys: [.fileSizeKey])
         guard let weightFileSize = weightFile.fileSize, weightFileSize > 0,
@@ -399,6 +433,7 @@ public enum Gemma4VisionEncoder {
         defer {
             Gemma4ImageMemoryPolicy.restoreMLX(oldMLXSettings)
         }
+        let weightsLoadStart = clock.now
         let vision = Gemma4VisionOnlyModel()
         let projection = Gemma4VisionProjection()
         // MLX's Metal backend does not implement the safetensors Load primitive on GPU.
@@ -419,29 +454,43 @@ public enum Gemma4VisionEncoder {
         }
         try vision.update(parameters: ModuleParameters.unflattened(filtered.filter { $0.key.hasPrefix("vision_tower.") }.map { (String($0.key.dropFirst("vision_tower.".count)), $0.value) }), verify: .all)
         try projection.update(parameters: ModuleParameters.unflattened(filtered.filter { $0.key.hasPrefix("embed_vision.") }.map { (String($0.key.dropFirst("embed_vision.".count)), $0.value) }), verify: .all)
+        let weightsLoadSeconds = seconds(weightsLoadStart.duration(to: clock.now))
         try checkProcessFootprint(processFootprint, maximum: maximumProcessFootprint)
         let input = MLXArray(image.values, [1, 3, image.geometry.height, image.geometry.width])
+        let visionTowerStart = clock.now
         let features = try withError {
             try vision(input) {
                 try checkProcessFootprint(processFootprint, maximum: maximumProcessFootprint)
             }
         }
+        let visionTowerSeconds = seconds(visionTowerStart.duration(to: clock.now))
+        let projectorStart = clock.now
         let projected = try withError {
             let output = projection(features).asType(.float16)
             output.eval()
             return output
         }
+        let projectorSeconds = seconds(projectorStart.duration(to: clock.now))
         try checkProcessFootprint(processFootprint, maximum: maximumProcessFootprint)
         let rows = projected.dim(1)
         guard rows == image.geometry.softTokenCount, rows <= Gemma4ImageGeometry.maxSoftTokens else {
             throw Gemma4ImageError.incompatibleWeights("projected token count does not match Gemma preprocessing")
         }
+        let outputCopyStart = clock.now
         let values = projected.asArray(Float16.self)
+        let outputCopySeconds = seconds(outputCopyStart.duration(to: clock.now))
         try checkProcessFootprint(processFootprint, maximum: maximumProcessFootprint)
         let output = Gemma4ProjectedImage(values: values,
                                          rowCount: rows,
                                          hiddenSize: Gemma4ImageGeometry.outputHiddenSize,
-                                         geometry: image.geometry)
+                                         geometry: image.geometry,
+                                         timings: Gemma4VisionTimings(
+                                            preprocessingSeconds: preprocessingSeconds,
+                                            weightsLoadSeconds: weightsLoadSeconds,
+                                            visionTowerSeconds: visionTowerSeconds,
+                                            projectorSeconds: projectorSeconds,
+                                            outputCopySeconds: outputCopySeconds,
+                                            totalSeconds: seconds(totalStart.duration(to: clock.now))))
         return output
     }
 }

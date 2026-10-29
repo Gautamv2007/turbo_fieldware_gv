@@ -141,7 +141,8 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             currentMemoryBytes: memorySampler.sample(),
             peakMemoryBytes: memorySampler.peakBytes,
             prefill: diagnostics?.prefill.map(Self.prefillDiagnostics),
-            runner: diagnostics?.runner.map(Self.runnerDiagnostics))
+            runner: diagnostics?.runner.map(Self.runnerDiagnostics),
+            imageProcessing: diagnostics?.imageProcessing.map(Self.imageProcessingDiagnostics))
     }
 
     private static func prefillDiagnostics(_ value: PrefillExecutionDiagnostics)
@@ -166,5 +167,20 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             rdadviseMegabytesPerToken: value.rdadviseMegabytesPerToken,
             rdadviseSkippedPerToken: value.rdadviseSkippedPerToken,
             rdadviseFailures: value.rdadviseFailures)
+    }
+
+    private static func imageProcessingDiagnostics(
+        _ value: AppImageProcessingDiagnostics
+    ) -> DecodeImageProcessingDiagnostics {
+        DecodeImageProcessingDiagnostics(
+            imageTokenBudget: value.imageTokenBudget,
+            projectedTokenCount: value.projectedTokenCount,
+            checksumSeconds: value.checksumSeconds,
+            preprocessingSeconds: value.preprocessingSeconds,
+            weightsLoadSeconds: value.weightsLoadSeconds,
+            visionTowerSeconds: value.visionTowerSeconds,
+            projectorSeconds: value.projectorSeconds,
+            outputCopySeconds: value.outputCopySeconds,
+            totalSeconds: value.totalSeconds)
     }
 }

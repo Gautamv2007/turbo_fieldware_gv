@@ -140,6 +140,38 @@ public struct DecodePrefillDiagnostics: Codable, Sendable, Equatable {
     }
 }
 
+public struct DecodeImageProcessingDiagnostics: Codable, Sendable, Equatable {
+    public var imageTokenBudget: Int
+    public var projectedTokenCount: Int
+    public var checksumSeconds: Double
+    public var preprocessingSeconds: Double
+    public var weightsLoadSeconds: Double
+    public var visionTowerSeconds: Double
+    public var projectorSeconds: Double
+    public var outputCopySeconds: Double
+    public var totalSeconds: Double
+
+    public init(imageTokenBudget: Int,
+                projectedTokenCount: Int,
+                checksumSeconds: Double,
+                preprocessingSeconds: Double,
+                weightsLoadSeconds: Double,
+                visionTowerSeconds: Double,
+                projectorSeconds: Double,
+                outputCopySeconds: Double,
+                totalSeconds: Double) {
+        self.imageTokenBudget = imageTokenBudget
+        self.projectedTokenCount = projectedTokenCount
+        self.checksumSeconds = checksumSeconds
+        self.preprocessingSeconds = preprocessingSeconds
+        self.weightsLoadSeconds = weightsLoadSeconds
+        self.visionTowerSeconds = visionTowerSeconds
+        self.projectorSeconds = projectorSeconds
+        self.outputCopySeconds = outputCopySeconds
+        self.totalSeconds = totalSeconds
+    }
+}
+
 public struct DecodeServiceEvent: Codable, Sendable {
     public var kind: DecodeServiceEventKind
     public var generationID: UUID
@@ -159,6 +191,7 @@ public struct DecodeServiceEvent: Codable, Sendable {
     public var peakMemoryBytes: UInt64?
     public var prefill: DecodePrefillDiagnostics?
     public var runner: DecodeRunnerDiagnostics?
+    public var imageProcessing: DecodeImageProcessingDiagnostics?
 
     public init(kind: DecodeServiceEventKind, generationID: UUID,
                 sequence: UInt64 = 0, textDelta: String = "",
@@ -170,7 +203,8 @@ public struct DecodeServiceEvent: Codable, Sendable {
                 stopReason: String? = nil, error: String? = nil,
                 currentMemoryBytes: UInt64? = nil, peakMemoryBytes: UInt64? = nil,
                 prefill: DecodePrefillDiagnostics? = nil,
-                runner: DecodeRunnerDiagnostics? = nil) {
+                runner: DecodeRunnerDiagnostics? = nil,
+                imageProcessing: DecodeImageProcessingDiagnostics? = nil) {
         self.kind = kind
         self.generationID = generationID
         self.sequence = sequence
@@ -189,6 +223,7 @@ public struct DecodeServiceEvent: Codable, Sendable {
         self.peakMemoryBytes = peakMemoryBytes
         self.prefill = prefill
         self.runner = runner
+        self.imageProcessing = imageProcessing
     }
 }
 

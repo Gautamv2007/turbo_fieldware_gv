@@ -13,6 +13,20 @@ struct RunnerDiagnosticsSection: View {
                 DiagnosticRow("Output tokens", "\(diagnostics.generatedTokens)")
                 DiagnosticRow("Stop", diagnostics.stopReason.rawValue)
 
+                if let image = diagnostics.imageProcessing {
+                    groupLabel("Image processing")
+                    DiagnosticRow("Detail budget",
+                                  "\(image.imageTokenBudget) requested · \(image.projectedTokenCount) rows")
+                    DiagnosticRow("Weight checksum", MetricFormat.seconds(image.checksumSeconds))
+                    DiagnosticRow("Image decode / resize",
+                                  MetricFormat.seconds(image.preprocessingSeconds))
+                    DiagnosticRow("Vision weight load", MetricFormat.seconds(image.weightsLoadSeconds))
+                    DiagnosticRow("Vision tower", MetricFormat.seconds(image.visionTowerSeconds))
+                    DiagnosticRow("Image projector", MetricFormat.seconds(image.projectorSeconds))
+                    DiagnosticRow("Output copy", MetricFormat.seconds(image.outputCopySeconds))
+                    DiagnosticRow("Image path total", MetricFormat.seconds(image.totalSeconds))
+                }
+
                 groupLabel("Performance")
                 DiagnosticRow("Prompt prefill", MetricFormat.seconds(diagnostics.prefillSeconds))
                 if let prefillRate = diagnostics.prefillTokensPerSecond {
@@ -22,7 +36,9 @@ struct RunnerDiagnosticsSection: View {
                         help: "Prompt tokens divided by prefill time. Compare runs with similar prompt lengths and settings; short prompts include proportionally more fixed overhead.")
                 }
                 DiagnosticRow("First token wait", MetricFormat.seconds(diagnostics.timeToFirstTokenSeconds))
-                DiagnosticRow("Request TTFT", MetricFormat.seconds(diagnostics.requestStartTimeToFirstTokenSeconds))
+                DiagnosticRow("Request TTFT",
+                              MetricFormat.seconds(diagnostics.requestStartTimeToFirstTokenSeconds),
+                              help: "Includes image processing when an image is attached, prompt prefill, and the first-token wait.")
                 DiagnosticRow("Decode duration", MetricFormat.seconds(diagnostics.decodeSeconds))
                 DiagnosticRow("Decode rate", "\(MetricFormat.rate(diagnostics.tokensPerSecond)) tok/s")
                 DiagnosticRow("Peak memory", MetricFormat.memory(diagnostics.peakMemoryBytes))

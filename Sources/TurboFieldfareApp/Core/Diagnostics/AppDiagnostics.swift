@@ -43,6 +43,38 @@ public struct AppRunnerDiagnostics: Equatable, Sendable {
     }
 }
 
+public struct AppImageProcessingDiagnostics: Equatable, Sendable {
+    public var imageTokenBudget: Int
+    public var projectedTokenCount: Int
+    public var checksumSeconds: Double
+    public var preprocessingSeconds: Double
+    public var weightsLoadSeconds: Double
+    public var visionTowerSeconds: Double
+    public var projectorSeconds: Double
+    public var outputCopySeconds: Double
+    public var totalSeconds: Double
+
+    public init(imageTokenBudget: Int,
+                projectedTokenCount: Int,
+                checksumSeconds: Double,
+                preprocessingSeconds: Double,
+                weightsLoadSeconds: Double,
+                visionTowerSeconds: Double,
+                projectorSeconds: Double,
+                outputCopySeconds: Double,
+                totalSeconds: Double) {
+        self.imageTokenBudget = imageTokenBudget
+        self.projectedTokenCount = projectedTokenCount
+        self.checksumSeconds = checksumSeconds
+        self.preprocessingSeconds = preprocessingSeconds
+        self.weightsLoadSeconds = weightsLoadSeconds
+        self.visionTowerSeconds = visionTowerSeconds
+        self.projectorSeconds = projectorSeconds
+        self.outputCopySeconds = outputCopySeconds
+        self.totalSeconds = totalSeconds
+    }
+}
+
 public struct AppDiagnostics: Equatable, Sendable {
     public var generatedTokens: Int
     public var stopReason: AppStopReason
@@ -55,10 +87,12 @@ public struct AppDiagnostics: Equatable, Sendable {
     public var runtimeOptions: AppRuntimeOptions
     public var prefill: PrefillExecutionDiagnostics?
     public var runner: AppRunnerDiagnostics?
+    public var imageProcessing: AppImageProcessingDiagnostics?
 
     public var requestStartTimeToFirstTokenSeconds: Double? {
         guard let prefillSeconds, let timeToFirstTokenSeconds else { return nil }
-        return prefillSeconds + timeToFirstTokenSeconds
+        return (imageProcessing?.totalSeconds ?? 0)
+            + prefillSeconds + timeToFirstTokenSeconds
     }
 
     public var prefillTokensPerSecond: Double? {
@@ -83,7 +117,8 @@ public struct AppDiagnostics: Equatable, Sendable {
                 peakMemoryBytes: UInt64?,
                 runtimeOptions: AppRuntimeOptions,
                 prefill: PrefillExecutionDiagnostics? = nil,
-                runner: AppRunnerDiagnostics? = nil) {
+                runner: AppRunnerDiagnostics? = nil,
+                imageProcessing: AppImageProcessingDiagnostics? = nil) {
         self.generatedTokens = generatedTokens
         self.stopReason = stopReason
         self.promptTokenCount = promptTokenCount
@@ -95,6 +130,7 @@ public struct AppDiagnostics: Equatable, Sendable {
         self.runtimeOptions = runtimeOptions
         self.prefill = prefill
         self.runner = runner
+        self.imageProcessing = imageProcessing
     }
 }
 
