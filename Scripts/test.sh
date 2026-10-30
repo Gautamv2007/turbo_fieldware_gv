@@ -14,7 +14,7 @@ cd "$script_directory/.."
 # Build/discover tests without executing them, then make the bundled metallib
 # visible at the path MLX checks first. This works around MLX's lookup failing
 # under SwiftPM's swift-testing runner.
-swift test --no-parallel --list-tests >/dev/null || exit $?
+swift test list >/dev/null || exit $?
 
 metallib_suffix='/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib'
 linked_metallibs=0
