@@ -119,11 +119,11 @@ itself or give incorrect answers, so check important results.
 
 The Mac app supports one optional JPEG or PNG image per request when separate
 vision weights are provided. See [Single-image input](docs/IMAGE_INPUT.md) for
-the variable image detail, 4K-context, and memory limits. The app and CLI support user and
-model messages plus optional system guidance; they do not expose or execute
-tools. The loopback server accepts function-tool declarations and returns
-model-produced tool calls for the client to authorize and execute. Audio and
-video are not supported.
+the variable image detail, 4K-context, and memory limits. The app and CLI
+support user and model messages plus optional system guidance; they do not
+expose or execute tools. The loopback server accepts function-tool declarations
+and returns model-produced tool calls for the client to authorize and execute.
+Audio and video are not supported.
 
 ### Mac app
 
@@ -167,6 +167,30 @@ The status bar shows generation progress, decode speed, and memory use. Use the
 right pane to configure sampling, context length, expert-cache slots, and
 runtime options. See [Runtime controls](docs/RUNTIME_CONTROLS.md) for details
 and defaults.
+
+#### Single-image input
+
+When the optional Gemma 4 vision weights are installed, attach one JPEG or PNG
+in the composer. Choose an image detail budget of 70, 140, 280, or 560 soft
+tokens. Higher budgets retain more detail and use more memory and prefill time;
+the projected row count can be lower than the selected budget to preserve the
+image's aspect ratio.
+
+For each image request, TurboFieldfare applies EXIF orientation, checks the
+file and decoded dimensions, and resizes the image to a Gemma-compatible patch
+grid. The MLX Swift vision path encodes 16×16 pixel patches, pools each 3×3
+patch region, and projects the result into image rows for the language model.
+The custom Swift and Metal runtime inserts those rows into the prompt, then
+runs chunked prefill with Gemma's bidirectional image attention before text
+generation. The Last run panel reports image decode/resize, vision-weight
+loading, vision-tower, projector, and output-copy timings.
+
+Image requests are limited to one image, 32 MiB, 100 megapixels, and a 4K
+context. The standard `.gturbo` install remains text-only; image support uses
+an optional `vision_weights.safetensors` sidecar extracted from the pinned
+checkpoint. Image processing has an adaptive process-memory guard capped at
+6 GiB; this is a safety limit, not a measured peak-memory guarantee. See
+[Single-image input](docs/IMAGE_INPUT.md) for sidecar setup and full limits.
 
 ### Command-line interface
 
